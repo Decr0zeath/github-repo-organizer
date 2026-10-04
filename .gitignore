@@ -1,0 +1,22 @@
+# Personal inventory and notes (keep these local)
+/github-projects.config.json
+/github-projects.config.json.*
+
+# Local clones of your GitHub repos (each one has its own .git)
+/repos/
+
+# Temp files serve.py creates while saving the config
+.github-config-*.tmp
+
+# Leftover folders if a test run is interrupted
+.inventory-test-*/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Windows and editor files
+Thumbs.db
+desktop.ini
+.vscode/

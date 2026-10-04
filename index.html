@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Organize your GitHub repositories with local comments and categories.">
+  <title>GitHub Repository Organizer</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23152235'/%3E%3Cpath d='M9 7h15v19H9a3 3 0 0 1-3-3V10a3 3 0 0 1 3-3Zm0 0v19M13 12h7M13 17h5' fill='none' stroke='%237ce3bc' stroke-width='2'/%3E%3C/svg%3E">
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-padding-top: 125px; }
+    body { margin: 24px; color: #222; background: white; font: 16px/1.5 system-ui, "Segoe UI", sans-serif; }
+    header, main { max-width: 1650px; margin: auto; }
+    h1 { font-size: 1.5rem; margin: 0 0 6px; }
+    .summary, .save-note, .section-caption, footer { color: #555; font-size: .875rem; }
+    .summary { margin: 0 0 18px; }
+    a { color: #1755a4; text-underline-offset: 2px; }
+    button, textarea, input, select { font: inherit; }
+    button { padding: 7px 14px; min-height: 40px; cursor: pointer; }
+    button:disabled { cursor: default; }
+    :focus-visible { outline: 2px solid #1755a4; outline-offset: 2px; }
+    .toolbar { position: sticky; top: 0; background: white; z-index: 2; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 0; border-bottom: 1px solid #ccc; }
+    .filter-controls, .actions, .category-manager { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+    .category-manager { margin-top: 18px; }
+    .category-manager label, .filter-controls label { font-size: .875rem; }
+    select, input[type="text"] { padding: 7px 9px; border: 1px solid #bbb; border-radius: 3px; min-height: 40px; max-width: 100%; background: white; color: #222; }
+    select { max-width: 300px; }
+    input[type="text"] { width: 240px; }
+    .filter-controls { flex: 1 1 480px; min-width: 0; }
+    #category-filter { display: flex; flex-wrap: wrap; gap: 6px; border: 0; padding: 0; margin: 0; min-width: 0; }
+    #category-filter legend { font-size: .8125rem; color: #555; margin-bottom: 7px; padding: 0; }
+    .filter-chip { display: inline-flex; align-items: center; gap: 7px; border: 1px solid #d1d8e0; border-radius: 999px; background: #fff; color: #39485c; padding: 4px 11px; min-height: 32px; font-size: .8125rem; text-align: left; overflow-wrap: anywhere; max-width: 100%; }
+    .filter-chip:hover:not(:disabled) { background: #f0f5fb; border-color: #789bc6; }
+    .filter-chip[aria-pressed="true"] { background: #1755a4; border-color: #1755a4; color: white; }
+    .filter-chip[aria-pressed="true"]:hover:not(:disabled) { background: #124688; }
+    .chip-count { border-radius: 999px; background: #edf1f6; color: #526175; padding: 0 6px; font-size: .75rem; flex: none; }
+    .filter-chip[aria-pressed="true"] .chip-count { background: #ffffff26; color: white; }
+    .repo-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+    .repo-tag, .untagged-chip { display: inline-flex; align-items: center; border-radius: 6px; font-size: .8125rem; max-width: 100%; }
+    .repo-tag { background: #edf4ff; border: 1px solid #d2e2f7; color: #214e88; padding-left: 8px; }
+    .tag-name { min-width: 0; overflow-wrap: anywhere; }
+    .tag-remove { flex: none; border: 0; border-radius: 0 5px 5px 0; background: transparent; color: #52729b; padding: 0 5px; min-height: 28px; min-width: 28px; font-size: 1.125rem; }
+    .tag-remove:hover:not(:disabled) { background: #fce4e4; color: #a22; }
+    .untagged-chip { background: #f3f4f6; color: #6a7280; padding: 3px 8px; }
+    .tag-add { display: block; margin-top: 7px; min-height: 32px; width: 100%; padding: 4px 7px; font-size: .8125rem; border: 1px dashed #b9c5d4; color: #1755a4; cursor: pointer; }
+    .tag-add:hover:not(:disabled) { background: #f5f9ff; border-color: #1755a4; }
+    .tag-hint { display: block; margin-top: 7px; color: #666; font-size: .75rem; }
+    .filter-chip:disabled, .tag-remove:disabled, .tag-add:disabled { opacity: .55; cursor: default; }
+    .browse-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; margin: 20px 0 6px; }
+    .search-control { flex: 1 1 280px; }
+    .browse-controls label { display: block; font-size: .8125rem; color: #555; margin-bottom: 5px; }
+    .search-box { position: relative; }
+    #repository-search { width: 100%; min-height: 40px; border: 1px solid #bbb; border-radius: 6px; padding: 8px 64px 8px 12px; background: white; color: #222; }
+    #clear-search { position: absolute; right: 4px; top: 4px; min-height: 32px; padding: 3px 8px; border: 0; border-radius: 4px; background: #f0f3f7; color: #1755a4; font-size: .8125rem; }
+    .sort-header { display: inline-flex; align-items: center; gap: 4px; padding: 0; min-height: 28px; text-align: left; border: 0; background: transparent; color: inherit; font-weight: 600; font-size: inherit; }
+    .sort-header:hover:not(:disabled) { color: #1755a4; }
+    .sort-indicator { color: #1755a4; flex: none; }
+    #empty-state { color: #555; }
+    [hidden] { display: none !important; }
+    .save-note { margin-top: 9px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+    #save-status[data-state="dirty"] { color: #855400; }
+    #save-status[data-state="error"] { color: #a22; }
+    code { font-size: .875rem; }
+    .notice { padding: 12px; margin: 16px 0; border: 1px solid #cfb97b; background: #fff9e9; }
+    .notice[hidden] { display: none; }
+    section { margin-top: 28px; }
+    .section-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    h2 { font-size: 1.125rem; margin: 0; }
+    .section-total { font-size: .875rem; font-weight: 400; color: #555; margin-left: 8px; }
+    .section-caption { margin: 0; }
+    table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+    th, td { text-align: left; vertical-align: top; padding: 12px; border: 1px solid #ddd; overflow-wrap: anywhere; }
+    th { background: #f4f4f4; font-size: .875rem; }
+    th:nth-child(1) { width: 19%; } th:nth-child(2) { width: 21%; } th:nth-child(3) { width: 22%; }
+    th:nth-child(4) { width: 16%; } th:nth-child(5) { width: 7%; } th:nth-child(6) { width: 7%; } th:nth-child(7) { width: 8%; }
+    .repo-link { font-weight: 600; }
+    .repo-meta { margin-top: 5px; color: #666; font-size: .8125rem; }
+    .clone-button { margin-top: 8px; min-height: 30px; padding: 3px 10px; border: 1px solid #c4d1e0; border-radius: 6px; background: #f5f9ff; color: #1755a4; font-size: .8125rem; }
+    .clone-button:hover:not(:disabled) { background: #e7f0fc; border-color: #1755a4; }
+    .clone-button:disabled { opacity: .6; }
+    .clone-status { margin-top: 5px; font-size: .75rem; color: #526175; overflow-wrap: anywhere; }
+    .clone-status:empty { display: none; }
+    .clone-status[data-state="error"] { color: #a22; }
+    .repo-description { margin: 0; }
+    .missing { color: #666; }
+    .badge, .language, td time { font-size: .875rem; }
+    textarea { width: 100%; min-height: 76px; max-height: 350px; padding: 8px; border: 1px solid #bbb; border-radius: 3px; color: #222; background: white; resize: vertical; line-height: 1.5; }
+    textarea::placeholder { color: #666; }
+    textarea:disabled { background: #f5f5f5; }
+    tr.edited td:nth-child(3), tr.edited td:nth-child(4) { background: #fffbea; }
+    tr.visibility-break td { border-top: 2px solid #aaa; }
+    footer { padding-top: 24px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+    @media (max-width: 800px) {
+      body { margin: 14px; }
+      html { scroll-padding-top: 155px; }
+      thead { display: none; }
+      table, tbody { display: block; }
+      tbody tr { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px; border: 1px solid #ddd; margin-bottom: 12px; }
+      td { display: block; padding: 0; border: 0; }
+      td:nth-child(1), td:nth-child(2), td:nth-child(3), td:nth-child(4) { grid-column: 1 / -1; }
+      td:nth-child(n+3)::before { content: attr(data-label); display: block; font-size: .875rem; color: #555; margin-bottom: 5px; }
+      tr.visibility-break td { border-top: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>GitHub Repository Organizer</h1>
+    <p class="summary"><span id="account-name">No account loaded</span> &#183; <span id="total-count">0</span> repositories &#183; <span id="public-count">0</span> public &#183; <span id="private-count">0</span> private</p>
+  </header>
+  <main class="workspace">
+    <div class="browse-controls">
+      <div class="search-control"><label for="repository-search">Search repositories</label><div class="search-box"><input id="repository-search" type="search" placeholder="Search by name, description, or language…" disabled><button id="clear-search" type="button" hidden>Clear</button></div></div>
+      <div><label for="sort-order">Sort by</label><select id="sort-order" disabled><option value="public-name">Visibility: public first</option><option value="private-name">Visibility: private first</option><option value="pushed-newest">Last pushed: newest first</option><option value="pushed-oldest">Last pushed: oldest first</option><option value="name-asc">Name: A to Z</option><option value="name-desc">Name: Z to A</option></select></div>
+    </div>
+    <div class="toolbar">
+      <div class="filter-controls"><fieldset id="category-filter" disabled aria-describedby="filter-help"><legend>Filter categories</legend></fieldset><span id="filter-help" class="sr-only">Select multiple categories to show repositories matching any selection. All clears the filters.</span></div>
+      <div class="actions"><button id="refresh-button" type="button" disabled>Refresh from GitHub</button><button id="save-button" type="button" disabled>Save changes</button></div>
+    </div>
+    <div class="save-note"><span id="save-status" role="status" aria-live="polite">Loading saved config...</span><span>Saved in <code>github-projects.config.json</code></span></div>
+    <div class="category-manager"><label for="new-category-name">New category</label><input id="new-category-name" type="text" maxlength="80" placeholder="Category name" disabled><button id="add-category" type="button" disabled>Add category</button><label for="delete-category-select">Remove category</label><select id="delete-category-select" disabled></select><button id="delete-category" type="button" disabled>Delete category</button></div>
+    <div class="notice" id="notice" role="alert" hidden></div>
+    <noscript><div class="notice">Enable JavaScript to view repositories and edit comments and categories.</div></noscript>
+    <section aria-labelledby="list-title">
+      <div class="section-heading"><h2><span id="list-title">All repositories</span> <span class="section-total" id="visible-count" role="status" aria-live="polite"></span></h2><p id="sort-caption" class="section-caption">Public first, then name</p></div>
+      <table><caption class="sr-only">Repositories in the selected categories</caption><thead><tr><th scope="col" aria-sort="none"><button class="sort-header" data-sort-column="name" type="button" disabled>Repository<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col">Description</th><th scope="col">My Comments</th><th scope="col">Categories</th><th scope="col" aria-sort="none"><button class="sort-header" data-sort-column="visibility" type="button" disabled>Visibility<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col">Language</th><th scope="col" aria-sort="none"><button class="sort-header" data-sort-column="pushed" type="button" disabled>Last pushed<span class="sort-indicator" aria-hidden="true">↕</span></button></th></tr></thead><tbody id="repositories-body"></tbody></table>
+      <p id="empty-state" hidden>No repositories match. Try a different search or choose All to clear the category filters.</p>
+    </section>
+    <footer>Last refreshed: <span id="refreshed-at"></span>. Last-push dates use UTC.</footer>
+  </main>
+  <script src="inventory.js"></script>
+</body>
+</html>
