@@ -497,21 +497,4 @@ document.addEventListener("keydown", event => {
 });
 window.addEventListener("beforeunload", event => { if (dirty) { event.preventDefault(); event.returnValue = ""; } });
 render();
-const loading = loadConfig();
-
-const modelContext = document.modelContext;
-if (modelContext?.registerTool) {
-  const lifecycle = new AbortController();
-  window.addEventListener("pagehide", () => lifecycle.abort(), { once: true });
-  const register = tool => { try { Promise.resolve(modelContext.registerTool(tool, { signal: lifecycle.signal })).catch(() => {}); } catch (_) {} };
-  register({ name: "read_project_inventory", title: "Read project inventory", description: "Read the inventory, categories, and comments, including unsaved edits.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true, untrustedContentHint: true }, execute: () => ({ saved: !dirty, categories: config.categories, repositories: orderedRepos([], "", []).map(repo => ({ name: repo.fullName, visibility: repo.visibility, categories: tagsFor(repo.fullName), comment: config.comments[repo.fullName] || "" })) }) });
-  register({ name: "stage_project_comments", title: "Stage project comments", description: "Stage comments without saving them. Use save_project_config to write them to the local config.", inputSchema: { type: "object", properties: { comments: { type: "object", additionalProperties: { type: "string", maxLength: 20000 } } }, required: ["comments"], additionalProperties: false }, annotations: { readOnlyHint: false, untrustedContentHint: true }, execute: input => {
-    ensureEditable();
-    if (!input || !input.comments || typeof input.comments !== "object" || Array.isArray(input.comments)) throw new Error("Provide a comments object.");
-    const entries = Object.entries(input.comments);
-    for (const [name, value] of entries) if (!config.repositories.some(repo => repo.fullName === name) || typeof value !== "string" || value.length > 20000) throw new Error("Invalid repository or comment: " + name);
-    for (const [name, value] of entries) config.comments[name] = value;
-    render(); return { staged: entries.length, saved: false };
-  } });
-  register({ name: "save_project_config", title: "Save project config", description: "Save the current comments, categories, tags, and selected categories to the local config file.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: false, untrustedContentHint: false }, execute: () => saveConfig() });
-}
+loadConfig();
