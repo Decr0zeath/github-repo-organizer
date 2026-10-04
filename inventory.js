@@ -10,6 +10,7 @@ let ready = false, saving = false, refreshing = false, dirty = false;
 const saveButton = document.getElementById("save-button");
 const refreshButton = document.getElementById("refresh-button");
 const categoryFilter = document.getElementById("category-filter");
+const topicFilter = document.getElementById("topic-filter");
 const categoryName = document.getElementById("new-category-name");
 const addCategoryButton = document.getElementById("add-category");
 const deleteCategoryButton = document.getElementById("delete-category");
@@ -26,6 +27,16 @@ const clearSearch = document.getElementById("clear-search");
 const sortSelect = document.getElementById("sort-order");
 const sortButtons = [...document.querySelectorAll("[data-sort-column]")];
 let searchQuery = "";
+let selectedTopics = [], aboutRepository = null, aboutSaving = false;
+const aboutButtons = new Map();
+const aboutDialog = document.getElementById("about-dialog");
+const aboutForm = document.getElementById("about-form");
+const aboutDescription = document.getElementById("about-description");
+const aboutHomepage = document.getElementById("about-homepage");
+const aboutTopics = document.getElementById("about-topics");
+const aboutError = document.getElementById("about-error");
+const aboutSave = document.getElementById("about-save");
+const aboutCancel = document.getElementById("about-cancel");
 
 function editableSnapshot(value = config) {
   return JSON.stringify({ view: value.view, comments: value.comments, categories: value.categories, repositoryCategories: value.repositoryCategories });
@@ -42,13 +53,15 @@ function makeCell(label) { const cell = element("td"); cell.dataset.label = labe
 function tagsFor(name) { return config.repositoryCategories[name] || []; }
 function displayTagsFor(name) { const tags = tagsFor(name); return tags.length ? tags : [UNTAGGED]; }
 function ensureEditable() {
-  if (!ready || saving || refreshing) throw new Error("Wait for the page to finish loading or saving.");
+  if (!ready || saving || refreshing || aboutSaving) throw new Error("Wait for the page to finish loading or saving.");
 }
 function updateControls() {
-  const busy = !ready || saving || refreshing;
+  const busy = !ready || saving || refreshing || aboutSaving;
   saveButton.disabled = busy || !dirty;
   refreshButton.disabled = busy;
   categoryFilter.disabled = busy;
+  topicFilter.disabled = busy;
+  for (const [name, button] of aboutButtons) button.disabled = busy || config.repositories.find(repo => repo.fullName === name).archived;
   searchInput.disabled = busy;
   clearSearch.disabled = busy;
   sortSelect.disabled = busy;
@@ -78,11 +91,12 @@ function refreshDirty() {
   updateControls();
   if (ready && !saving && !refreshing) setStatus(dirty ? "Unsaved changes" : "All changes saved", dirty ? "dirty" : "saved");
 }
-function orderedRepos(categories = config.view.categories, query = searchQuery) {
+function orderedRepos(categories = config.view.categories, query = searchQuery, topics = selectedTopics) {
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   return config.repositories.filter(repo => {
     if (categories.length && !categories.some(category => displayTagsFor(repo.fullName).includes(category))) return false;
-    const searchable = [repo.fullName, repo.description, repo.language].join(" ").toLowerCase();
+    if (topics.length && !topics.some(topic => (repo.topics || []).includes(topic))) return false;
+    const searchable = [repo.fullName, repo.description, repo.language, ...(repo.topics || [])].join(" ").toLowerCase();
     return terms.every(term => searchable.includes(term));
   }).sort((a, b) => {
     const name = a.name.localeCompare(b.name, "en", { sensitivity: "base", numeric: true });
@@ -98,6 +112,92 @@ function orderedRepos(categories = config.view.categories, query = searchQuery) 
   });
 }
 function setSort(sort) { ensureEditable(); config.view.sort = sort; render(); }
+function parsedTopics() {
+  return [...new Set(aboutTopics.value.toLowerCase().split(/[\s,]+/).filter(Boolean))];
+}
+function normalizeHomepage(value) {
+  return !/^[a-z][a-z0-9+.-]*:/i.test(value) && !/\s/.test(value) && value.split("/", 1)[0].includes(".") ? "https://" + value : value;
+}
+function homepageLink(value) {
+  const normalized = normalizeHomepage(value);
+  if (!/^https?:\/\//i.test(normalized)) return "";
+  try { return new URL(normalized).hostname ? normalized : ""; } catch (_) { return ""; }
+}
+function validateAboutForm() {
+  const topics = parsedTopics();
+  const message = topics.length > 20 || topics.some(topic => !/^[a-z0-9][a-z0-9-]{0,49}$/.test(topic))
+    ? "Use at most 20 topics, each 1 to 50 lowercase letters, digits, or hyphens, starting with a letter or digit." : "";
+  aboutTopics.setCustomValidity(message);
+  aboutTopics.setAttribute("aria-invalid", String(Boolean(message)));
+  document.getElementById("about-topics-error").textContent = message;
+  const length = [...aboutDescription.value].length;
+  document.getElementById("about-count").textContent = length + " / 350 characters";
+  aboutDescription.setCustomValidity(length > 350 ? "Description must be at most 350 characters." : "");
+  const homepage = normalizeHomepage(aboutHomepage.value);
+  const websiteValid = !homepage || Boolean(homepageLink(homepage)) && !/[\s\x00-\x1f]/.test(homepage) && [...homepage].length <= 255;
+  aboutHomepage.setCustomValidity(websiteValid ? "" : "Use an HTTP or HTTPS website of at most 255 characters, or leave empty.");
+  document.getElementById("about-website-help").textContent = homepage !== aboutHomepage.value
+    ? "This website will be saved with https:// added." : "An HTTP or HTTPS URL, a host or host/path, or leave empty.";
+  aboutSave.disabled = aboutSaving || Boolean(message) || length > 350;
+}
+function openAbout(repo) {
+  ensureEditable();
+  if (repo.archived) return;
+  aboutRepository = repo.fullName;
+  document.getElementById("about-title").textContent = "Edit about: " + repo.name;
+  aboutDescription.value = repo.description;
+  aboutHomepage.value = repo.homepage || "";
+  aboutTopics.value = (repo.topics || []).join(", ");
+  aboutError.textContent = "";
+  validateAboutForm();
+  aboutDialog.showModal();
+}
+function acceptAbout(result) {
+  const repo = config.repositories.find(repo => repo.fullName === result.repository?.fullName);
+  if (!repo || repo.fullName !== aboutRepository || typeof result.revision !== "string") throw new Error("Unexpected About response. Reload and refresh to sync GitHub's values.");
+  for (const field of ["description", "homepage", "topics"]) repo[field] = result.repository[field];
+  revision = result.revision;
+  render();
+}
+async function saveAbout(event) {
+  event.preventDefault();
+  if (aboutSaving) return;
+  validateAboutForm();
+  if (!aboutForm.reportValidity()) return;
+  ensureEditable();
+  aboutSaving = true;
+  aboutError.textContent = "";
+  aboutSave.textContent = "Saving...";
+  for (const control of [aboutDescription, aboutHomepage, aboutTopics, aboutCancel, aboutSave]) control.disabled = true;
+  updateControls();
+  try {
+    const response = await fetch("/api/about", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repository: aboutRepository, revision, description: aboutDescription.value, homepage: normalizeHomepage(aboutHomepage.value), topics: parsedTopics() }),
+      signal: AbortSignal.timeout(255000)
+    });
+    const result = await response.json();
+    if (response.ok || (result.repository && result.revision)) acceptAbout(result);
+    if (!response.ok && result.repository) {
+      aboutDescription.value = result.repository.description;
+      aboutHomepage.value = result.repository.homepage;
+    }
+    if (!response.ok) throw new Error(result.error || "Could not save About fields.");
+    aboutDialog.close();
+  } catch (error) {
+    aboutError.textContent = error.message;
+  } finally {
+    aboutSaving = false;
+    for (const control of [aboutDescription, aboutHomepage, aboutTopics, aboutCancel, aboutSave]) control.disabled = false;
+    aboutSave.textContent = "Save to GitHub";
+    validateAboutForm(); refreshDirty();
+  }
+}
+for (const input of [aboutDescription, aboutHomepage, aboutTopics]) input.addEventListener("input", validateAboutForm);
+aboutForm.addEventListener("submit", saveAbout);
+aboutCancel.addEventListener("click", () => { if (!aboutSaving) aboutDialog.close(); });
+aboutDialog.addEventListener("cancel", event => { if (aboutSaving) event.preventDefault(); });
+aboutDialog.addEventListener("close", () => { (aboutButtons.get(aboutRepository) || searchInput).focus(); });
 async function cloneRepository(repo) {
   if (!ready || cloningRepository !== null || cloneStates.get(repo.fullName)?.cloned) return;
   cloningRepository = repo.fullName;
@@ -175,9 +275,30 @@ function renderCategories() {
   }
   if (config.categories.includes(previous)) deleteCategorySelect.value = previous;
 }
+function renderTopics() {
+  const topics = [...new Set(config.repositories.flatMap(repo => repo.topics || []))].sort();
+  selectedTopics = selectedTopics.filter(topic => topics.includes(topic));
+  topicFilter.hidden = !topics.length;
+  topicFilter.replaceChildren(element("legend", "", "Filter topics"));
+  for (const topic of [null, ...topics]) {
+    const selected = topic === null ? !selectedTopics.length : selectedTopics.includes(topic);
+    const count = orderedRepos(config.view.categories, searchQuery, topic === null ? [] : [topic]).length;
+    const button = element("button", "filter-chip");
+    button.type = "button";
+    button.dataset.focusKey = JSON.stringify(["topic", topic]);
+    button.setAttribute("aria-pressed", String(selected));
+    button.append(element("span", "", topic ?? "All"), element("span", "chip-count", String(count)));
+    button.addEventListener("click", () => {
+      ensureEditable();
+      selectedTopics = topic === null ? [] : selected ? selectedTopics.filter(name => name !== topic) : [...selectedTopics, topic];
+      render();
+    });
+    topicFilter.append(button);
+  }
+}
 function renderRows() {
   const body = document.getElementById("repositories-body");
-  body.replaceChildren(); textareas.clear(); tagInputs.length = 0; cloneControls.clear();
+  body.replaceChildren(); textareas.clear(); tagInputs.length = 0; cloneControls.clear(); aboutButtons.clear();
   const list = orderedRepos();
   document.getElementById("list-title").textContent = config.view.categories.join(", ") || "All repositories";
   document.getElementById("visible-count").textContent = list.length + " of " + config.repositories.length + " repositories";
@@ -204,10 +325,29 @@ function renderRows() {
     const cloneStatus = element("div", "clone-status");
     cloneStatus.setAttribute("role", "status");
     cloneStatus.setAttribute("aria-live", "polite");
-    nameCell.append(cloneButton, cloneStatus);
+    const aboutButton = element("button", "clone-button about-button", "Edit about");
+    aboutButton.type = "button";
+    aboutButton.title = repo.archived ? "Archived repositories cannot be edited." : "Edit GitHub description, website, and topics";
+    aboutButton.setAttribute("aria-label", repo.archived ? "Edit about " + repo.name + ": archived repositories cannot be edited." : "Edit about " + repo.name);
+    aboutButton.dataset.focusKey = JSON.stringify(["about", repo.fullName]);
+    aboutButton.addEventListener("click", () => openAbout(repo));
+    aboutButtons.set(repo.fullName, aboutButton);
+    nameCell.append(cloneButton, aboutButton, cloneStatus);
     cloneControls.set(repo.fullName, { button: cloneButton, status: cloneStatus });
     const descriptionCell = makeCell("Description");
     descriptionCell.append(element("p", repo.description ? "repo-description" : "repo-description missing", repo.description || "No description"));
+    if (repo.homepage) {
+      const href = homepageLink(repo.homepage);
+      const website = element(href ? "a" : "span", "repo-website", repo.homepage);
+      if (href) { website.href = href; website.target = "_blank"; website.rel = "noopener noreferrer"; }
+      descriptionCell.append(website);
+    }
+    if (repo.topics?.length) {
+      const topics = element("div", "repo-topics");
+      topics.setAttribute("aria-label", "GitHub topics");
+      for (const topic of repo.topics) topics.append(element("span", "topic-tag", topic));
+      descriptionCell.append(topics);
+    }
     const commentCell = makeCell("My Comments"), textarea = element("textarea");
     textarea.value = config.comments[repo.fullName] || "";
     textarea.placeholder = "Add a comment...";
@@ -261,7 +401,7 @@ function renderRows() {
 function render() {
   const focusKey = document.activeElement?.dataset.focusKey;
   const fallbackKey = document.activeElement?.dataset.focusFallback;
-  renderCategories(); renderRows();
+  renderTopics(); renderCategories(); renderRows();
   clearSearch.hidden = !searchQuery;
   sortSelect.value = config.view.sort;
   const sortLabels = { "public-name": "Public first, then name", "private-name": "Private first, then name", "pushed-newest": "Last pushed: newest first", "pushed-oldest": "Last pushed: oldest first", "name-asc": "Name: A to Z", "name-desc": "Name: Z to A" };
@@ -285,7 +425,7 @@ function render() {
   }
 }
 function acceptState(result) {
-  if (result.config?.schemaVersion !== 3) throw new Error("The older launcher is still running. Close its window, reopen Open-GitHub-Projects.cmd, then reload this page.");
+  if (result.config?.schemaVersion !== 3) throw new Error("An older version of the app is still running on this port. Stop it (close its window or press Ctrl+C) and start the app again.");
   config = result.config; revision = result.revision;
   baseline = editableSnapshot(); baselineComments = { ...config.comments };
   baselineTags = JSON.parse(JSON.stringify(config.repositoryCategories));
@@ -298,7 +438,7 @@ async function responseData(response) {
   return result;
 }
 async function saveConfig(duringRefresh = false) {
-  if (!ready || saving || (refreshing && !duringRefresh)) throw new Error("Wait for the current operation to finish.");
+  if (!ready || saving || aboutSaving || aboutDialog.open || (refreshing && !duringRefresh)) throw new Error("Wait for the current operation to finish.");
   if (!dirty) return { saved: true, changed: false };
   saving = true; updateControls(); setStatus("Saving comments and categories...");
   try {
@@ -315,6 +455,7 @@ async function saveConfig(duringRefresh = false) {
 }
 async function refreshFromGitHub() {
   ensureEditable();
+  if (aboutDialog.open) throw new Error("Close the About dialog before refreshing.");
   refreshing = true; updateControls(); showNotice("");
   let summary = null;
   try {
@@ -351,7 +492,7 @@ saveButton.addEventListener("click", () => { saveConfig().catch(() => {}); });
 refreshButton.addEventListener("click", () => { refreshFromGitHub().catch(() => {}); });
 document.addEventListener("keydown", event => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
-    event.preventDefault(); if (ready && dirty && !saving && !refreshing) saveConfig().catch(() => {});
+    event.preventDefault(); if (ready && dirty && !saving && !refreshing && !aboutDialog.open) saveConfig().catch(() => {});
   }
 });
 window.addEventListener("beforeunload", event => { if (dirty) { event.preventDefault(); event.returnValue = ""; } });
@@ -363,7 +504,7 @@ if (modelContext?.registerTool) {
   const lifecycle = new AbortController();
   window.addEventListener("pagehide", () => lifecycle.abort(), { once: true });
   const register = tool => { try { Promise.resolve(modelContext.registerTool(tool, { signal: lifecycle.signal })).catch(() => {}); } catch (_) {} };
-  register({ name: "read_project_inventory", title: "Read project inventory", description: "Read the inventory, categories, and comments, including unsaved edits.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true, untrustedContentHint: true }, execute: () => ({ saved: !dirty, categories: config.categories, repositories: orderedRepos([], "").map(repo => ({ name: repo.fullName, visibility: repo.visibility, categories: tagsFor(repo.fullName), comment: config.comments[repo.fullName] || "" })) }) });
+  register({ name: "read_project_inventory", title: "Read project inventory", description: "Read the inventory, categories, and comments, including unsaved edits.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true, untrustedContentHint: true }, execute: () => ({ saved: !dirty, categories: config.categories, repositories: orderedRepos([], "", []).map(repo => ({ name: repo.fullName, visibility: repo.visibility, categories: tagsFor(repo.fullName), comment: config.comments[repo.fullName] || "" })) }) });
   register({ name: "stage_project_comments", title: "Stage project comments", description: "Stage comments without saving them. Use save_project_config to write them to the local config.", inputSchema: { type: "object", properties: { comments: { type: "object", additionalProperties: { type: "string", maxLength: 20000 } } }, required: ["comments"], additionalProperties: false }, annotations: { readOnlyHint: false, untrustedContentHint: true }, execute: input => {
     ensureEditable();
     if (!input || !input.comments || typeof input.comments !== "object" || Array.isArray(input.comments)) throw new Error("Provide a comments object.");

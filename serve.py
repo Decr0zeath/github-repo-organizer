@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent
 CONFIG_NAME = "github-projects.config.json"
 MAX_BODY = 32 * 1024 * 1024
 UNTAGGED = "Untagged"
-API_VERSION = 5
+API_VERSION = 6
 
 
 class ConfigError(Exception):
@@ -40,8 +40,44 @@ class GitHubError(Exception):
     pass
 
 
+class AboutPartialError(GitHubError):
+    def __init__(self, message, result):
+        super().__init__(message)
+        self.result = result
+
+
 def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def normalize_homepage(homepage):
+    if isinstance(homepage, str) and not re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", homepage) and not re.search(r"\s", homepage) and "." in homepage.split("/", 1)[0]:
+        return "https://" + homepage
+    return homepage
+
+
+def validate_about(description, homepage, topics, editing=False):
+    if not isinstance(homepage, str) or not isinstance(topics, list) or any(not isinstance(topic, str) for topic in topics):
+        raise ConfigError("Website must be text and topics must be a list of strings.")
+    if not isinstance(description, str) or (editing and len(description) > 350):
+        raise ConfigError("Description must be text of at most 350 characters when editing.")
+    if not editing:
+        return
+    homepage = normalize_homepage(homepage)
+    if len(homepage) > 255:
+        raise ConfigError("Website must be empty or an HTTP/HTTPS URL of at most 255 characters.")
+    if homepage:
+        try:
+            url = urlsplit(homepage)
+            if url.scheme.lower() not in {"http", "https"} or not url.hostname or any(character.isspace() or ord(character) < 32 for character in homepage):
+                raise ValueError("Invalid website")
+            url.port
+        except ValueError as error:
+            raise ConfigError("Website must be empty or an HTTP/HTTPS URL of at most 255 characters.") from error
+    if not isinstance(topics, list) or len(topics) > 20 or any(not isinstance(topic, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,49}", topic) for topic in topics):
+        raise ConfigError("Use at most 20 topics, each 1 to 50 lowercase letters, digits, or hyphens, starting with a letter or digit.")
+    if len(topics) != len(set(topics)):
+        raise ConfigError("Topics must be unique.")
 
 
 def validate_config(config):
@@ -102,6 +138,7 @@ def validate_config(config):
             raise ConfigError("Invalid repository visibility.")
         if any(not isinstance(repo.get(field), str) for field in ("description", "language", "pushedAt")):
             raise ConfigError("Invalid repository text fields.")
+        validate_about(repo["description"], repo.get("homepage", ""), repo.get("topics", []))
         if any(type(repo.get(field)) is not bool for field in ("isFork", "archived", "disabled")):
             raise ConfigError("Invalid repository status.")
         if name not in assignments:
@@ -109,7 +146,7 @@ def validate_config(config):
     return config
 
 
-def run_gh(arguments, timeout=120):
+def run_gh(arguments, timeout=120, input_data=None):
     executable = shutil.which("gh")
     if not executable:
         raise GitHubError("Install the GitHub CLI (gh), add it to PATH, and run gh auth login.")
@@ -117,7 +154,7 @@ def run_gh(arguments, timeout=120):
     environment.pop("GH_DEBUG", None)
     environment["GH_PROMPT_DISABLED"] = "1"
     try:
-        result = subprocess.run([executable, "api", "--hostname", "github.com", *arguments], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=environment, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        result = subprocess.run([executable, "api", "--hostname", "github.com", *arguments], input=input_data, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=environment, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     except subprocess.TimeoutExpired as error:
         raise GitHubError("GitHub took too long to respond. Try refreshing again.") from error
     except OSError as error:
@@ -149,7 +186,8 @@ def fetch_github_repositories(account):
                     raise ValueError("Unexpected owner")
                 repositories.append({
                     "id": raw["id"], "name": raw["name"], "fullName": account + "/" + raw["name"],
-                    "url": "https://github.com/" + account + "/" + raw["name"], "description": raw.get("description") or "", "language": raw.get("language") or "",
+                    "url": "https://github.com/" + account + "/" + raw["name"], "description": raw.get("description") or "",
+                    "homepage": raw.get("homepage") or "", "topics": raw.get("topics", []), "language": raw.get("language") or "",
                     "visibility": raw.get("visibility") or ("private" if raw["private"] else "public"),
                     "isFork": raw["fork"], "archived": raw["archived"], "disabled": raw.get("disabled", False),
                     "pushedAt": (raw.get("pushed_at") or "")[:10],
@@ -259,6 +297,9 @@ class ConfigStore:
                 raise ConfigError("The configuration file exceeds 32 MB.")
             config = json.loads(raw.decode("utf-8-sig"))
             validate_config(config)
+            for repo in config["repositories"]:
+                repo.setdefault("homepage", "")
+                repo.setdefault("topics", [])
             return {"config": config, "revision": hashlib.sha256(raw).hexdigest()}
         except FileNotFoundError as error:
             raise ConfigError(f"{CONFIG_NAME} is missing from the project directory.") from error
@@ -308,6 +349,54 @@ class ConfigStore:
             if temporary is not None and temporary.exists():
                 temporary.unlink()
         return {"config": saved, "revision": hashlib.sha256(payload).hexdigest()}
+
+    def about(self, name, revision, description, homepage, topics):
+        homepage = normalize_homepage(homepage)
+        validate_about(description, homepage, topics, editing=True)
+        with self.lock:
+            current = self._read()
+            if not isinstance(revision, str) or revision != current["revision"]:
+                raise ConfigConflict("The config changed in another window or editor. Copy your unsaved comments, then reload before saving.")
+            config = current["config"]
+            if not isinstance(name, str) or not name.startswith(config["account"] + "/"):
+                raise ConfigError("Choose a repository owned by the configured account.")
+            repo = next((repo for repo in config["repositories"] if repo["fullName"] == name), None)
+            if repo is None:
+                raise ConfigError("Choose a repository from the inventory.")
+            if repo["archived"]:
+                raise ConfigError("Archived repositories cannot be edited.")
+            changed = False
+            failure = None
+            part = "description and website"
+            try:
+                if description != repo["description"] or homepage != repo["homepage"]:
+                    raw = json.loads(run_gh(["--method", "PATCH", "repos/" + name, "--input", "-"], input_data=json.dumps({"description": description, "homepage": homepage})))
+                    saved_description = raw["description"] if raw["description"] is not None else ""
+                    saved_homepage = raw["homepage"] if raw["homepage"] is not None else ""
+                    validate_about(saved_description, saved_homepage, repo["topics"])
+                    repo.update({"description": saved_description, "homepage": saved_homepage})
+                    changed = True
+                part = "topics"
+                if set(topics) != set(repo["topics"]):
+                    raw = json.loads(run_gh(["--method", "PUT", "repos/" + name + "/topics", "--input", "-"], input_data=json.dumps({"names": topics})))
+                    validate_about(repo["description"], repo["homepage"], raw["names"])
+                    repo["topics"] = raw["names"]
+                    changed = True
+            except (GitHubError, ConfigError, ValueError, TypeError, KeyError) as error:
+                failure = f"Could not save {part}: {error} Check gh permissions and refresh to confirm GitHub's current values."
+                if not changed:
+                    raise GitHubError(failure) from error
+            if changed:
+                if self._read()["revision"] != revision:
+                    raise ConfigConflict("GitHub was updated, but the config changed in an editor. Local changes were kept. Reload and refresh to sync the About fields.")
+                try:
+                    current = self._write(config)
+                except (OSError, ConfigError) as error:
+                    raise GitHubError("GitHub was updated, but the local config could not be saved. Reload and refresh to sync the About fields.") from error
+            result = {"repository": repo, "revision": current["revision"]}
+            if failure:
+                raise AboutPartialError("Description and website were saved to GitHub and the local config; topics failed. " + failure, result)
+            return result
 
     def refresh(self, revision, fetcher=None):
         if not self.refresh_lock.acquire(blocking=False):
@@ -406,7 +495,7 @@ def make_handler(root, store):
                 self.reply(403, {"error": "Requests must come from this local page."})
                 return
             path = urlsplit(self.path).path
-            if path not in {"/api/refresh", "/api/clone"}:
+            if path not in {"/api/refresh", "/api/clone", "/api/about"}:
                 self.reply(404, {"error": "Not found."})
                 return
             try:
@@ -416,9 +505,15 @@ def make_handler(root, store):
                 document = json.loads(self.rfile.read(length).decode("utf-8"))
                 if not isinstance(document, dict):
                     raise ConfigError("Expected a request object.")
-                self.reply(200, store.clone(document.get("repository")) if path == "/api/clone" else store.refresh(document.get("revision")))
+                if path == "/api/about":
+                    result = store.about(document.get("repository"), document.get("revision"), document.get("description"), document.get("homepage"), document.get("topics"))
+                else:
+                    result = store.clone(document.get("repository")) if path == "/api/clone" else store.refresh(document.get("revision"))
+                self.reply(200, result)
             except ConfigConflict as error:
                 self.reply(409, {"error": str(error)})
+            except AboutPartialError as error:
+                self.reply(502, {"error": str(error), **error.result})
             except GitHubError as error:
                 self.reply(502, {"error": str(error)})
             except (ConfigError, ValueError, UnicodeError) as error:

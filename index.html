@@ -27,8 +27,8 @@
     select { max-width: 300px; }
     input[type="text"] { width: 240px; }
     .filter-controls { flex: 1 1 480px; min-width: 0; }
-    #category-filter { display: flex; flex-wrap: wrap; gap: 6px; border: 0; padding: 0; margin: 0; min-width: 0; }
-    #category-filter legend { font-size: .8125rem; color: #555; margin-bottom: 7px; padding: 0; }
+    #category-filter, #topic-filter { display: flex; flex-wrap: wrap; gap: 6px; border: 0; padding: 0; margin: 0; min-width: 0; }
+    #category-filter legend, #topic-filter legend { font-size: .8125rem; color: #555; margin-bottom: 7px; padding: 0; }
     .filter-chip { display: inline-flex; align-items: center; gap: 7px; border: 1px solid #d1d8e0; border-radius: 999px; background: #fff; color: #39485c; padding: 4px 11px; min-height: 32px; font-size: .8125rem; text-align: left; overflow-wrap: anywhere; max-width: 100%; }
     .filter-chip:hover:not(:disabled) { background: #f0f5fb; border-color: #789bc6; }
     .filter-chip[aria-pressed="true"] { background: #1755a4; border-color: #1755a4; color: white; }
@@ -82,6 +82,18 @@
     .clone-status:empty { display: none; }
     .clone-status[data-state="error"] { color: #a22; }
     .repo-description { margin: 0; }
+    .repo-website { display: block; margin-top: 7px; font-size: .875rem; }
+    .repo-topics { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+    .topic-tag { border-radius: 999px; padding: 2px 8px; background: #f1e9fa; color: #643a82; font-size: .75rem; }
+    #topic-filter .filter-chip[aria-pressed="true"] { background: #643a82; border-color: #643a82; }
+    .about-button { margin-left: 6px; }
+    dialog { width: min(560px, calc(100% - 28px)); max-height: 90vh; overflow: auto; border: 1px solid #bbb; border-radius: 8px; padding: 24px; }
+    dialog::backdrop { background: #0006; }
+    dialog label { display: block; margin-top: 16px; }
+    dialog input { width: 100% !important; padding: 8px; }
+    dialog .actions { justify-content: flex-end; margin-top: 20px; }
+    .field-hint { color: #555; font-size: .8125rem; margin: 4px 0; }
+    #about-error, #about-topics-error { color: #a22; }
     .missing { color: #666; }
     .badge, .language, td time { font-size: .875rem; }
     textarea { width: 100%; min-height: 76px; max-height: 350px; padding: 8px; border: 1px solid #bbb; border-radius: 3px; color: #222; background: white; resize: vertical; line-height: 1.5; }
@@ -111,11 +123,11 @@
   </header>
   <main class="workspace">
     <div class="browse-controls">
-      <div class="search-control"><label for="repository-search">Search repositories</label><div class="search-box"><input id="repository-search" type="search" placeholder="Search by name, description, or language…" disabled><button id="clear-search" type="button" hidden>Clear</button></div></div>
+      <div class="search-control"><label for="repository-search">Search repositories</label><div class="search-box"><input id="repository-search" type="search" placeholder="Search by name, description, language, or topic…" disabled><button id="clear-search" type="button" hidden>Clear</button></div></div>
       <div><label for="sort-order">Sort by</label><select id="sort-order" disabled><option value="public-name">Visibility: public first</option><option value="private-name">Visibility: private first</option><option value="pushed-newest">Last pushed: newest first</option><option value="pushed-oldest">Last pushed: oldest first</option><option value="name-asc">Name: A to Z</option><option value="name-desc">Name: Z to A</option></select></div>
     </div>
     <div class="toolbar">
-      <div class="filter-controls"><fieldset id="category-filter" disabled aria-describedby="filter-help"><legend>Filter categories</legend></fieldset><span id="filter-help" class="sr-only">Select multiple categories to show repositories matching any selection. All clears the filters.</span></div>
+      <div class="filter-controls"><fieldset id="category-filter" disabled aria-describedby="filter-help"><legend>Filter categories</legend></fieldset><fieldset id="topic-filter" disabled hidden aria-describedby="filter-help"><legend>Filter topics</legend></fieldset><span id="filter-help" class="sr-only">Select multiple categories or topics to match any selection within each group. Repositories must match both groups. All clears its group.</span></div>
       <div class="actions"><button id="refresh-button" type="button" disabled>Refresh from GitHub</button><button id="save-button" type="button" disabled>Save changes</button></div>
     </div>
     <div class="save-note"><span id="save-status" role="status" aria-live="polite">Loading saved config...</span><span>Saved in <code>github-projects.config.json</code></span></div>
@@ -125,10 +137,28 @@
     <section aria-labelledby="list-title">
       <div class="section-heading"><h2><span id="list-title">All repositories</span> <span class="section-total" id="visible-count" role="status" aria-live="polite"></span></h2><p id="sort-caption" class="section-caption">Public first, then name</p></div>
       <table><caption class="sr-only">Repositories in the selected categories</caption><thead><tr><th scope="col" aria-sort="none"><button class="sort-header" data-sort-column="name" type="button" disabled>Repository<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col">Description</th><th scope="col">My Comments</th><th scope="col">Categories</th><th scope="col" aria-sort="none"><button class="sort-header" data-sort-column="visibility" type="button" disabled>Visibility<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col">Language</th><th scope="col" aria-sort="none"><button class="sort-header" data-sort-column="pushed" type="button" disabled>Last pushed<span class="sort-indicator" aria-hidden="true">↕</span></button></th></tr></thead><tbody id="repositories-body"></tbody></table>
-      <p id="empty-state" hidden>No repositories match. Try a different search or choose All to clear the category filters.</p>
+      <p id="empty-state" hidden>No repositories match. Try a different search or choose All in each filter group.</p>
     </section>
     <footer>Last refreshed: <span id="refreshed-at"></span>. Last-push dates use UTC.</footer>
   </main>
+  <dialog id="about-dialog" aria-labelledby="about-title" aria-describedby="about-note">
+    <form id="about-form">
+      <h2 id="about-title">Edit about</h2>
+      <p id="about-note">Saved directly to GitHub. Visible to anyone who can see this repository.</p>
+      <label for="about-description">Description</label>
+      <textarea id="about-description" rows="3" aria-describedby="about-count"></textarea>
+      <p id="about-count" class="field-hint" aria-live="polite">0 / 350 characters</p>
+      <label for="about-homepage">Website</label>
+      <input id="about-homepage" type="text" inputmode="url" maxlength="255" placeholder="https://example.com" aria-describedby="about-website-help">
+      <p id="about-website-help" class="field-hint">An HTTP or HTTPS URL, a host or host/path, or leave empty.</p>
+      <label for="about-topics">Topics</label>
+      <input id="about-topics" type="text" aria-describedby="about-topics-help about-topics-error">
+      <p id="about-topics-help" class="field-hint">Separate topics with commas or spaces. Up to 20 topics; use letters, digits, and hyphens.</p>
+      <p id="about-topics-error" class="field-hint" aria-live="polite"></p>
+      <p id="about-error" role="alert"></p>
+      <div class="actions"><button id="about-cancel" type="button">Cancel</button><button id="about-save" type="submit">Save to GitHub</button></div>
+    </form>
+  </dialog>
   <script src="inventory.js"></script>
 </body>
 </html>

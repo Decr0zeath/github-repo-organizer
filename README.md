@@ -6,7 +6,7 @@ A local browser app for browsing repositories owned by your GitHub account, orga
 
 - Python 3.7 or newer. The server uses `ThreadingHTTPServer`, postponed annotations, and `subprocess.run` options introduced in Python 3.7.
 - GitHub CLI (`gh`) on PATH, signed in to GitHub.com with `gh auth login`.
-- A modern browser with JavaScript and `AbortSignal.timeout` support.
+- A modern browser with JavaScript, native dialogs, and `AbortSignal.timeout` support.
 - Git on PATH to use **Clone**.
 
 ## Start the app
@@ -25,14 +25,16 @@ The app opens at `http://127.0.0.1:8765`. Keep the terminal window open while us
 
 If `github-projects.config.json` is missing, first run reads the signed-in GitHub login, fetches all pages of owned repositories, and creates the config atomically. Comments and categories start empty, every repository starts untagged, and the default view shows all repositories with public repositories first. If the CLI is missing or signed out, install it and run `gh auth login`, then restart.
 
-When a config already exists, startup loads it without requiring the CLI or network access. Refresh and cloning require GitHub access. Refresh refuses to replace the inventory when the CLI is signed in to a different account from the config, and names both accounts in the error.
+When a config already exists, startup loads it without requiring the CLI or network access. Refresh, About editing, and cloning require GitHub access. Refresh refuses to replace the inventory when the CLI is signed in to a different account from the config, and names both accounts in the error.
 
 To change the port, run `python serve.py --port 8766 --open` on Windows or `python3 serve.py --port 8766 --open` on macOS or Linux. Reopening the launcher reuses a compatible server already running for the same folder and port. After updating the app, stop the old server and restart it.
 
 ## Features
 
 - **Sort:** use the sort menu or repository, visibility, and last-pushed column headers. Missing push dates stay last.
-- **Search:** match repository names, descriptions, and languages. Search combines with category filters and is temporary.
+- **Search:** match repository names, descriptions, languages, and GitHub topics. Search combines with filters and is temporary.
+- **About:** websites appear as links and GitHub topics as purple tags, separate from private categories. **Edit about** saves the description, website, and topics directly to GitHub, making them public for public repositories. It requires a `gh` login allowed to edit the repository; archived repositories cannot be edited. Pending local comments and tags are preserved. If only part of an update succeeds, the dialog reports what was saved and what failed.
+- **Topic filters:** select any matching topic with **Filter topics**; repositories must also match the selected category group. Topic selection is temporary. **All** clears its group, and the topic group is hidden when there are no topics.
 - **Categories:** create categories, assign multiple tags to each repository, and filter by any selected category. **Untagged** appears automatically for empty tag lists. Deleting a category removes its assignments.
 - **Comments:** edit notes and save with **Save changes**, Ctrl+S, or Cmd+S. Sort order and selected category filters are saved too.
 - **Refresh:** retrieve current repository metadata through your `gh` login. Pending edits are saved first. Stable GitHub IDs preserve notes and tags across renames; notes for repositories no longer returned remain in the config. Failed refreshes keep the saved inventory.
@@ -40,7 +42,7 @@ To change the port, run `python serve.py --port 8766 --open` on Windows or `pyth
 
 ## Local data and configuration
 
-`github-projects.config.json` in the app folder stores the inventory, comments, categories, and view settings. This file is ignored by git and is never uploaded anywhere by the app. Clones in `repos/` are also ignored by git. GitHub requests only retrieve account/repository data or clone repositories; comments and categories stay local. Back up the config to preserve your notes.
+`github-projects.config.json` in the app folder stores the inventory, comments, categories, and view settings. This file is ignored by git and is never uploaded anywhere by the app. Clones in `repos/` are also ignored by git. About edits send only description, website, and topic fields to GitHub; comments and categories stay local. Back up the config to preserve your notes.
 
 Only schema version 3 is supported; other versions produce an unsupported config version error.
 
@@ -55,7 +57,9 @@ Only schema version 3 is supported; other versions produce an unsupported config
 | `comments` | Full repository names mapped to comment text; missing entries display as empty |
 | `categories` | Unique custom category names; `Untagged` is reserved |
 | `repositoryCategories` | Full repository names mapped to lists of custom categories; every current repository needs a list, possibly empty |
-| `repositories` | Repository metadata: stable `id`, `name`, `fullName`, `url`, `description`, `language`, `visibility`, `isFork`, `archived`, `disabled`, and `pushedAt` |
+| `repositories` | Repository metadata: stable `id`, `name`, `fullName`, `url`, `description`, `homepage`, `topics`, `language`, `visibility`, `isFork`, `archived`, `disabled`, and `pushedAt` |
+
+Older schema-3 configs load with an empty website and topic list until refreshed. About edits allow descriptions up to 350 characters, an HTTP/HTTPS website up to 255 characters, and up to 20 unique topics of 1–50 lowercase letters, digits, or hyphens, starting with a letter or digit. Websites entered as a host or host/path without a scheme are saved with `https://` added. Stored GitHub values are preserved as returned; websites that cannot be linked safely appear as plain text. The dialog lowercases topics and removes duplicates.
 
 Repository keys use `account/repository-name` and must belong to the configured account. Saves use an atomic file replacement. Revision checks prevent an older browser window from overwriting changes made by another window or editor; preserve unsaved notes and reload if a conflict occurs.
 

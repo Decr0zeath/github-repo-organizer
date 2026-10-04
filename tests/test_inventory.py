@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def repository(repo_id, name, visibility="public"):
     return {"id": repo_id, "name": name, "fullName": "octocat/" + name,
             "url": "https://github.com/octocat/" + name, "description": "A project",
+            "homepage": "", "topics": [],
             "language": "Python", "visibility": visibility, "isFork": False,
             "archived": False, "disabled": False, "pushedAt": "2024-01-01"}
 
@@ -217,8 +218,12 @@ class InventoryTests(unittest.TestCase):
                            "html_url": repo["url"], "description": repo["description"], "language": repo["language"],
                            "visibility": repo["visibility"], "private": repo["visibility"] == "private", "fork": False,
                            "archived": False, "disabled": False, "pushed_at": "2024-01-01T06:00:00Z"}])
+        pages[0][0].update({"homepage": "https://example.com/project", "topics": ["python", "local-app"]})
+        pages[1][0]["homepage"] = None
+        expected = copy.deepcopy(self.repos)
+        expected[0].update({"homepage": "https://example.com/project", "topics": ["python", "local-app"]})
         with patch.object(serve, "run_gh", side_effect=["OCTOCAT\n", json.dumps(pages)]) as cli:
-            self.assertEqual(serve.fetch_github_repositories("octocat"), self.repos)
+            self.assertEqual(serve.fetch_github_repositories("octocat"), expected)
             self.assertIn("--paginate", cli.call_args.args[0])
             self.assertIn("--slurp", cli.call_args.args[0])
         with patch.object(serve, "run_gh", return_value="DifferentAccount"):
@@ -319,6 +324,241 @@ class InventoryTests(unittest.TestCase):
                 self.store.clone("octocat/project")
         finally:
             self.store.clone_lock.release()
+
+
+class AboutTests(unittest.TestCase):
+    setUp = InventoryTests.setUp
+
+    def request_about(self, changes=None, headers=None):
+        if not hasattr(self, "address"):
+            handler = serve.make_handler(self.root, self.store)
+            handler.log_message = lambda *args: None
+            server = serve.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            self.address = f"http://127.0.0.1:{server.server_port}"
+        document = {"repository": "octocat/project", "revision": self.store.read()["revision"],
+                    "description": "New description", "homepage": "https://example.com", "topics": ["python", "local-app"]}
+        document.update(changes or {})
+        request_headers = {"Content-Type": "application/json", "Origin": self.address}
+        request_headers.update(headers or {})
+        request = Request(self.address + "/api/about", data=json.dumps(document).encode(), headers=request_headers, method="POST")
+        try:
+            response = urlopen(request, timeout=5)
+        except HTTPError as error:
+            response = error
+        with response:
+            return response.code, json.load(response)
+
+    def test_old_config_defaults_do_not_rewrite_file(self):
+        for repo in self.config["repositories"]:
+            repo.pop("homepage")
+            repo.pop("topics")
+        self.path.write_text(json.dumps(self.config), encoding="utf-8")
+        before = self.path.read_bytes()
+        state = self.store.read()
+        for repo in state["config"]["repositories"]:
+            self.assertEqual(repo["homepage"], "")
+            self.assertEqual(repo["topics"], [])
+        self.assertEqual(state["config"]["schemaVersion"], 3)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_about_validation_limits(self):
+        serve.validate_about("x" * 350, "https://example.com/" + "x" * 235, ["a" * 50], editing=True)
+        serve.validate_about("", "", ["topic-" + str(index) for index in range(20)], editing=True)
+        invalid = [
+            {"description": "x" * 351}, {"description": None},
+            {"homepage": "https://example.com/" + "x" * 236}, {"homepage": None},
+            {"homepage": "javascript:alert(1)"}, {"homepage": "ftp://example.com"},
+            {"homepage": "https://"}, {"homepage": "not-a-host"},
+            {"homepage": "https://example.com/\npath"}, {"homepage": "https://[invalid"},
+            {"topics": "python"}, {"topics": ["Python"]}, {"topics": ["-python"]},
+            {"topics": ["python_test"]}, {"topics": [""]}, {"topics": ["a" * 51]},
+            {"topics": ["python", "python"]}, {"topics": [None]},
+            {"topics": ["topic-" + str(index) for index in range(21)]},
+        ]
+        for change in invalid:
+            fields = {"description": "", "homepage": "", "topics": []}
+            fields.update(change)
+            with self.subTest(change=change), self.assertRaises(serve.ConfigError):
+                serve.validate_about(**fields, editing=True)
+        self.config["repositories"][0]["description"] = "x" * 351
+        serve.validate_config(self.config)
+        for field, value in (("homepage", None), ("topics", "python"), ("topics", [None])):
+            changed = copy.deepcopy(self.config)
+            changed["repositories"][0][field] = value
+            with self.subTest(field=field), self.assertRaises(serve.ConfigError):
+                serve.validate_config(changed)
+
+    def test_stored_about_content_loads_without_edit_validation(self):
+        for homepage in ("someone.github.io/project", "javascript:alert(1)", "not a URL", "x" * 300):
+            with self.subTest(homepage=homepage):
+                self.config["repositories"][0].update({"homepage": homepage, "topics": ["UPPER_case"] * 21 + ["x" * 51]})
+                self.path.write_text(json.dumps(self.config), encoding="utf-8")
+                self.assertEqual(self.store.read()["config"], self.config)
+
+    def test_refresh_stores_schemeless_homepage_unchanged(self):
+        raw = {"id": 1, "name": "project", "owner": {"login": "octocat"},
+               "html_url": "https://github.com/octocat/project", "description": "A project",
+               "homepage": "someone.github.io/project", "topics": ["UPPER_case"],
+               "language": "Python", "private": False, "fork": False, "archived": False,
+               "pushed_at": "2024-01-01T00:00:00Z"}
+        with patch.object(serve, "run_gh", side_effect=["octocat", json.dumps([[raw]])]):
+            result = self.store.refresh(self.store.read()["revision"])
+        repo = result["config"]["repositories"][0]
+        self.assertEqual(repo["homepage"], raw["homepage"])
+        self.assertEqual(repo["topics"], raw["topics"])
+        self.assertEqual(self.store.read()["config"], result["config"])
+
+    def test_schemeless_edit_sends_normalized_homepage(self):
+        serve.validate_about("", "example.com", [], editing=True)
+        with patch.object(serve, "run_gh", return_value=json.dumps({"description": "A project", "homepage": "https://example.com"})) as cli:
+            status, result = self.request_about({"description": "A project", "homepage": "example.com", "topics": []})
+        self.assertEqual(status, 200)
+        self.assertEqual(cli.call_count, 1)
+        self.assertEqual(json.loads(cli.call_args.kwargs["input_data"])["homepage"], "https://example.com")
+        self.assertEqual(result["repository"]["homepage"], "https://example.com")
+        # Compare after normalization: the same input now needs no GitHub update.
+        with patch.object(serve, "run_gh") as cli:
+            status, _ = self.request_about({"description": "A project", "homepage": "example.com", "topics": []})
+        self.assertEqual(status, 200)
+        cli.assert_not_called()
+
+    def test_topics_edit_with_stored_schemeless_homepage(self):
+        homepage = "someone.github.io/project"
+        self.config["repositories"][0]["homepage"] = homepage
+        self.path.write_text(json.dumps(self.config), encoding="utf-8")
+        replies = [json.dumps({"description": "A project", "homepage": homepage}), json.dumps({"names": ["python"]})]
+        with patch.object(serve, "run_gh", side_effect=replies) as cli:
+            status, result = self.request_about({"description": "A project", "homepage": homepage, "topics": ["python"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(cli.call_args_list[0].kwargs["input_data"])["homepage"], "https://" + homepage)
+        self.assertEqual(cli.call_args_list[1].args[0][1], "PUT")
+        self.assertEqual(result["repository"]["topics"], ["python"])
+        self.assertEqual(result["repository"]["homepage"], homepage)
+
+    def test_about_http_success_uses_json_stdin_and_response_metadata(self):
+        revision = self.store.read()["revision"]
+        replies = [json.dumps({"description": "GitHub description", "homepage": "https://example.com/"}),
+                   json.dumps({"names": ["local-app", "python"]})]
+        with patch.object(serve, "run_gh", side_effect=replies) as cli:
+            status, result = self.request_about()
+        self.assertEqual(status, 200)
+        self.assertEqual(cli.call_args_list[0].args[0], ["--method", "PATCH", "repos/octocat/project", "--input", "-"])
+        self.assertEqual(json.loads(cli.call_args_list[0].kwargs["input_data"]), {"description": "New description", "homepage": "https://example.com"})
+        self.assertEqual(cli.call_args_list[1].args[0], ["--method", "PUT", "repos/octocat/project/topics", "--input", "-"])
+        self.assertEqual(json.loads(cli.call_args_list[1].kwargs["input_data"]), {"names": ["python", "local-app"]})
+        expected = copy.deepcopy(self.config)
+        expected["repositories"][0].update({"description": "GitHub description", "homepage": "https://example.com/", "topics": ["local-app", "python"]})
+        self.assertEqual(self.store.read()["config"], expected)
+        self.assertEqual(result["repository"], expected["repositories"][0])
+        self.assertEqual(result["revision"], self.store.read()["revision"])
+        self.assertNotEqual(result["revision"], revision)
+        # A pending local edit can use the new revision without overwriting About metadata.
+        pending = copy.deepcopy(self.config)
+        pending["comments"]["octocat/project"] = "Unsaved local note"
+        saved = self.store.save(pending, result["revision"])
+        self.assertEqual(saved["config"]["repositories"], expected["repositories"])
+        self.assertEqual(saved["config"]["comments"], pending["comments"])
+
+    def test_unchanged_about_skips_both_calls_and_preserves_revision(self):
+        before = self.path.read_bytes()
+        revision = self.store.read()["revision"]
+        with patch.object(serve, "run_gh") as cli:
+            status, result = self.request_about({"description": "A project", "homepage": "", "topics": []})
+        cli.assert_not_called()
+        self.assertEqual(status, 200)
+        self.assertEqual(result["revision"], revision)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_about_skips_each_unchanged_group(self):
+        with patch.object(serve, "run_gh", return_value=json.dumps({"names": ["python", "local-app"]})) as cli:
+            status, _ = self.request_about({"description": "A project", "homepage": ""})
+        self.assertEqual(status, 200)
+        self.assertEqual(cli.call_count, 1)
+        self.assertEqual(cli.call_args.args[0][1], "PUT")
+        with patch.object(serve, "run_gh", return_value=json.dumps({"description": "New description", "homepage": None})) as cli:
+            status, result = self.request_about({"homepage": "", "topics": ["local-app", "python"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(cli.call_count, 1)
+        self.assertEqual(cli.call_args.args[0][1], "PATCH")
+        self.assertEqual(result["repository"]["homepage"], "")
+
+    def test_about_rejects_archived_unknown_and_foreign_repositories(self):
+        with patch.object(serve, "run_gh") as cli:
+            for name in (None, "octocat/missing", "another-user/project", "octocat/../escape"):
+                with self.subTest(name=name):
+                    status, _ = self.request_about({"repository": name})
+                    self.assertEqual(status, 400)
+            self.config["repositories"][0]["archived"] = True
+            self.path.write_text(json.dumps(self.config), encoding="utf-8")
+            status, result = self.request_about()
+        self.assertEqual(status, 400)
+        self.assertIn("Archived", result["error"])
+        cli.assert_not_called()
+
+    def test_about_rejects_stale_revision_and_invalid_fields(self):
+        before = self.path.read_bytes()
+        with patch.object(serve, "run_gh") as cli:
+            for revision in (None, "outdated"):
+                status, _ = self.request_about({"revision": revision})
+                self.assertEqual(status, 409)
+            for change in ({"description": "x" * 351}, {"homepage": "javascript:alert(1)"}, {"topics": ["Bad"]}):
+                status, _ = self.request_about(change)
+                self.assertEqual(status, 400)
+        cli.assert_not_called()
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_about_rejects_foreign_origin_and_host(self):
+        with patch.object(serve, "run_gh") as cli:
+            for headers in ({"Origin": "https://unrelated.example"}, {"Origin": "null"}, {"Host": "unrelated.example"}):
+                status, _ = self.request_about(headers=headers)
+                self.assertEqual(status, 403)
+        cli.assert_not_called()
+
+    def test_partial_failure_saves_description_and_returns_new_revision(self):
+        revision = self.store.read()["revision"]
+        replies = [json.dumps({"description": "Saved description", "homepage": "https://example.com"}), serve.GitHubError("topics denied")]
+        with patch.object(serve, "run_gh", side_effect=replies):
+            status, result = self.request_about()
+        self.assertEqual(status, 502)
+        self.assertIn("Description and website were saved", result["error"])
+        self.assertIn("topics failed", result["error"])
+        expected = copy.deepcopy(self.config)
+        expected["repositories"][0].update({"description": "Saved description", "homepage": "https://example.com"})
+        self.assertEqual(self.store.read()["config"], expected)
+        self.assertEqual(result["repository"], expected["repositories"][0])
+        self.assertNotEqual(result["revision"], revision)
+        self.assertEqual(result["revision"], self.store.read()["revision"])
+
+    def test_failed_first_call_does_not_change_config_or_send_topics(self):
+        before = self.path.read_bytes()
+        with patch.object(serve, "run_gh", side_effect=serve.GitHubError("permission denied")) as cli:
+            status, result = self.request_about()
+        self.assertEqual(status, 502)
+        self.assertIn("description and website", result["error"])
+        self.assertEqual(cli.call_count, 1)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_about_preserves_external_edit_during_github_call(self):
+        changed = copy.deepcopy(self.config)
+        changed["comments"]["octocat/project"] = "Saved externally"
+        def external_edit(*args, **kwargs):
+            self.path.write_text(json.dumps(changed), encoding="utf-8")
+            return json.dumps({"description": "Saved description", "homepage": ""})
+        with patch.object(serve, "run_gh", side_effect=external_edit):
+            status, result = self.request_about({"homepage": "", "topics": []})
+        self.assertEqual(status, 409)
+        self.assertIn("GitHub was updated", result["error"])
+        self.assertEqual(self.store.read()["config"], changed)
+
+    def test_run_gh_passes_json_stdin_to_subprocess(self):
+        payload = json.dumps({"description": "Quotes: \" and newlines\n", "homepage": ""})
+        with patch.object(serve.shutil, "which", return_value="gh"), patch.object(serve.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "{}", "")) as command:
+            serve.run_gh(["--method", "PATCH", "repos/octocat/project", "--input", "-"], input_data=payload)
+        self.assertEqual(command.call_args.kwargs["input"], payload)
+        self.assertIn("--input", command.call_args.args[0])
 
 
 if __name__ == "__main__":
